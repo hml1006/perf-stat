@@ -36,14 +36,10 @@ class Display;
 
 class SecondStat {
 public:
-	SecondStat()
+	SecondStat(time_t second)
 	{
 		Clear();
-	}
-
-	void SetTime(time_t secs)
-	{
-		time_ = secs;
+		time_ = second;
 	}
 
 	time_t GetTime()
@@ -105,7 +101,7 @@ public:
 				}
 				if (0 == medium_latency) {
 					if (num >= medium) {
-						medium = it->first;
+						medium_latency = it->first;
 					}
 				}
 				if (0 == no75th_latency) {
@@ -165,13 +161,17 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(second_stats_mutex_);
 		if (unlikely(second_stats_.find(current) == second_stats_.end())) {
-			second_stats_.insert(std::pair<time_t, std::shared_ptr<SecondStat>>(current, std::shared_ptr<SecondStat>(new SecondStat())));
+			second_stats_.insert(std::pair<time_t, std::shared_ptr<SecondStat>>(current, std::shared_ptr<SecondStat>(new SecondStat(current))));
 
 			// 删除2秒前的统计数据,避免数据暴涨
+			std::vector<time_t> need_rm;
 			for (auto it = second_stats_.begin(); it != second_stats_.end(); it++) {
 				if (current - it->second->GetTime() > 2) {
-					second_stats_.erase(it++);
+					need_rm.push_back(it->first);
 				}
+			}
+			for (auto it = need_rm.begin(); it != need_rm.end(); it++) {
+				second_stats_.erase(*it);
 			}
 		}
 
@@ -212,9 +212,9 @@ public:
 		file_ = fdopen(1, "a+");
 	}
 
-	void SetOutPut(int fd)
+	void SetOutPut(FILE *file)
 	{
-		file_ = fdopen(fd, "a+");
+		file_ = file;
 	}
 
 
@@ -230,10 +230,10 @@ public:
 					int percent = 0;
 					if (nullptr != parent) {
 						auto parent_second_stat = parent->GetSecondStat(second);
-						percent =second_stat->GetTotalLatency() / (parent_second_stat->GetTotalLatency()? parent_second_stat->GetTotalLatency() : 1) * 100;
+						percent =(second_stat->GetTotalLatency() * 1.0 / (parent_second_stat->GetTotalLatency()? parent_second_stat->GetTotalLatency() : 1)) * 100;
 					}
 
-					fprintf(file_, "Latency: %s, time: %ld, requests: %d, total latency: %d, percent: %d %%, average latency: %d us, min/medium/75th/95th/99th, latency: %d/%d/%d/%d/%d us\n",
+					fprintf(file_, "Name: %s  time: %ld, requests: %d, total latency: %d, percent: %d %%, average latency: %d us, min/medium/75th/95th/99th, latency: %d/%d/%d/%d/%d us\n",
 							stat_item_->GetStatName().c_str(), second_stat->GetTime(), second_stat->GetTotalReq(), second_stat->GetTotalLatency(), percent, average, min, medium, no75th, no95th, no99th);
 				}
 			}
@@ -253,6 +253,12 @@ public:
 		for (int i = 0; i < 1024; i++) {
 			stats_.push_back(nullptr);
 		}
+	}
+
+	static void InitWithLog(std::string log)
+	{
+		Init();
+		log_ = log;
 	}
 
 	// stat_name 标记一个统计指标
@@ -298,8 +304,15 @@ public:
 	{
 		std::vector<std::shared_ptr<Display>> displays;
 		current_display_time_ = time(NULL);
+		FILE *log = NULL;
+		if (!log_.empty()) {
+			log = fopen(log_.c_str(), "a+");
+		}
 		for (auto it = stats_.begin(); it != stats_.end(); it++) {
 			Display *display = new Display(*it);
+			if (log) {
+				display->SetOutPut(log);
+			}
 			displays.push_back(std::shared_ptr<Display>(display));
 		}
 
@@ -315,16 +328,16 @@ public:
 	}
 
 private:
+	static std::string log_;
 	static int current_stat_fd;
 	static std::vector<std::shared_ptr<StatItem>> stats_;
 	static time_t current_display_time_;
 };
 
+std::string Statistic::log_ = std::string();
 int Statistic::current_stat_fd = -1;
 time_t Statistic::current_display_time_ = 0;
 std::vector<std::shared_ptr<StatItem>> Statistic::stats_ = std::vector<std::shared_ptr<StatItem>>();
-
-
 
 // 用计算时间的对象, 析构时间减去构造函数时间为时间间隔
 class MeasurePoint {
